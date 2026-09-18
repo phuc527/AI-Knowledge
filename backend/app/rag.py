@@ -1,10 +1,6 @@
 import chromadb
-from openai import OpenAI
+import ollama
 
-from app.config import OPENAI_API_KEY
-
-
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 chroma_client = chromadb.PersistentClient(
     path="./chroma"
@@ -15,9 +11,26 @@ collection = chroma_client.get_or_create_collection(
 )
 
 
+def create_embedding(question: str):
+    response = ollama.embed(
+        model="nomic-embed-text",
+        input=question,
+    )
+
+    embedding = response["embeddings"][0]
+
+    print(
+        f"Question embedding dimension: {len(embedding)}"
+    )
+
+    return embedding
+
+
 async def ask_question(question: str):
+    query_embedding = create_embedding(question)
+
     results = collection.query(
-        query_texts=[question],
+        query_embeddings=[query_embedding],
         n_results=5,
     )
 
@@ -30,12 +43,18 @@ async def ask_question(question: str):
             "sources": [],
         }
 
-    context = "\n\n".join(documents)
+    context = "\n\n".join(
+        f"[Page {metadata['page']}]\n{document}"
+        for document, metadata in zip(
+            documents,
+            metadatas
+        )
+    )
 
     prompt = f"""
 You are an AI assistant for answering questions about uploaded documents.
 
-Use only the provided context.
+Use ONLY the provided context.
 
 If the answer cannot be found in the context,
 say that you don't have enough information.
@@ -45,14 +64,16 @@ Context:
 
 Question:
 {question}
+
+Answer:
 """
 
-    response = client.responses.create(
-        model="gpt-5",
-        input=prompt,
+    response = ollama.generate(
+        model="llama3.2",
+        prompt=prompt,
     )
 
     return {
-        "answer": response.output_text,
+        "answer": response["response"],
         "sources": metadatas,
     }

@@ -2,14 +2,10 @@ import os
 import uuid
 
 import chromadb
+import ollama
 from fastapi import UploadFile
-from openai import OpenAI
 from pypdf import PdfReader
 
-from app.config import OPENAI_API_KEY
-
-
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 chroma_client = chromadb.PersistentClient(
     path="./chroma"
@@ -32,6 +28,21 @@ def split_text(text: str, chunk_size: int = 1000):
     return chunks
 
 
+def create_embeddings(documents: list[str]):
+    response = ollama.embed(
+        model="nomic-embed-text",
+        input=documents,
+    )
+
+    embeddings = response["embeddings"]
+
+    print(
+        f"Embedding dimension: {len(embeddings[0])}"
+    )
+
+    return embeddings
+
+
 async def process_pdf(file: UploadFile):
     file_id = str(uuid.uuid4())
 
@@ -44,37 +55,42 @@ async def process_pdf(file: UploadFile):
 
     reader = PdfReader(file_path)
 
-    pages = []
-
-    for page_number, page in enumerate(reader.pages, start=1):
-        text = page.extract_text() or ""
-
-        if text.strip():
-            pages.append({
-                "page": page_number,
-                "text": text,
-            })
-
     documents = []
     metadatas = []
     ids = []
 
-    for page in pages:
-        chunks = split_text(page["text"])
+    for page_number, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+
+        if not text.strip():
+            continue
+
+        chunks = split_text(text)
 
         for chunk_index, chunk in enumerate(chunks):
             documents.append(chunk)
 
             metadatas.append({
                 "file": file.filename,
-                "page": page["page"],
+                "page": page_number,
                 "chunk": chunk_index,
             })
 
             ids.append(str(uuid.uuid4()))
 
+    if not documents:
+        return {
+            "message": "PDF contains no readable text",
+            "file": file.filename,
+            "pages": len(reader.pages),
+            "chunks": 0,
+        }
+
+    embeddings = create_embeddings(documents)
+
     collection.add(
         documents=documents,
+        embeddings=embeddings,
         metadatas=metadatas,
         ids=ids,
     )
@@ -82,6 +98,7 @@ async def process_pdf(file: UploadFile):
     return {
         "message": "PDF processed successfully",
         "file": file.filename,
-        "pages": len(pages),
+        "pages": len(reader.pages),
         "chunks": len(documents),
+        "embedding_dimension": len(embeddings[0]),
     }
